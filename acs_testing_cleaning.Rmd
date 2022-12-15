@@ -1,0 +1,253 @@
+---
+title: "EDA and Cleaning"
+author: "Brandon Wallace"
+date: '`r Sys.Date()`'
+output: html_document 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Set Up
+
+Pulling data with an API:
+
+```{r}
+
+address_ <- "https://api.census.gov/data/2021/acs/acs1?get=NAME,group(B28007)&for=place:*&key="
+
+creds <- jsonlite::fromJSON(".creds.json")
+  
+census_url <- paste(address_, creds$key, sep="")
+
+```
+
+
+```{r}
+suppressWarnings(library(httr))
+suppressWarnings(library(jsonlite))
+
+my_pull <- GET(census_url) 
+
+```
+
+```{r}
+suppressWarnings(library(janitor))
+
+broadband <- fromJSON(rawToChar(my_pull$content))
+
+broadband_df <- as.data.frame(broadband)
+
+broadband_df<- broadband_df %>% row_to_names(row_number = 1)
+
+```
+
+```{r}
+
+head(broadband_df)
+
+```
+
+
+```{r}
+library(dplyr)
+
+broadband_df[,2:81] <- broadband_df[,2:81] %>% mutate_if(is.character, as.numeric)
+
+broadband_df
+```
+
+```{r}
+library(tidycensus)
+#census_api_key(jsonlite::fromJSON(".creds.json"), install = TRUE)
+
+```
+
+
+```{r}
+library(tidycensus)
+library(sf)
+library(tigris)
+library(tidyverse)
+library(viridis)
+
+data_vars = c(total_population = "B01001_001", 
+           total_pop_employed = "B28007_003", 
+           total_pop_unemployed = "B28007_009", 
+           total_pop_employed_has_computer = "B28007_004", 
+           total_pop_employed_has_cpu_and_dailup = "B28007_005", 
+           total_pop_employed_has_cpu_and_broadband = "B28007_006",
+           total_pop_employed_no_computer = "B28007_008",
+           total_pop_unemployed_no_computer = "B28007_014") 
+
+broadband_data <- get_acs(geography = "county", variables = data_vars, year = 2021, geometry = TRUE)  
+
+```
+
+
+```{r}
+broadband_data_clean <- as.data.frame(broadband_data)[,c(1:4)] %>% spread(variable, estimate) 
+
+```
+
+
+```{r}
+broadband_data_clean
+```
+
+```{r}
+
+visual_has_broadband <- get_acs(geography = "county", variables = c(total_pop_employed_has_cpu_and_broadband = "B28007_006"),
+                                summary_var = c(employed_population = "B28007_001"),
+                                year = 2021, geometry = TRUE) %>% mutate(proportion = (estimate/summary_est) *100)
+
+visual_has_broadband 
+```
+
+
+```{r}
+library(leaflet)
+library(leaflet.extras)
+
+with_broadband_pal <- colorNumeric(palette = "magma", domain = visual_has_broadband$proportion) 
+
+visual_has_broadband %>%
+    st_transform(crs = "+init=epsg:4326") %>%
+    leaflet() %>%
+    addProviderTiles(provider = "CartoDB.Positron") %>%
+    addPolygons(popup = ~ str_extract(NAME, "^([^,]*)"),
+                stroke = FALSE,
+                smoothFactor = 0,
+                fillOpacity = 0.5,
+                color = ~ with_broadband_pal(proportion)) %>%
+    addLegend("bottomright", 
+              pal = with_broadband_pal, 
+              values = ~proportion,
+              title = "Proportion of Employed Persons with Broadband and a Personal Computer",
+              opacity = 1)
+```
+
+
+```{r}
+
+visual_no_computer <- get_acs(geography = "county", variables = c(total_pop_unemployed_no_computer = "B28007_014"), 
+                              summary_var = c(employed_population = "B28007_001"), 
+                              year = 2021, geometry = TRUE) %>% mutate(proportion = (estimate/summary_est) * 100) 
+
+visual_no_computer
+```
+
+
+```{r}
+
+without_computer_pal <- colorNumeric(palette = "inferno", domain = visual_no_computer$proportion) 
+
+visual_no_computer %>%
+    st_transform(crs = "+init=epsg:4326") %>%
+    leaflet() %>%
+    addProviderTiles(provider = "CartoDB.Positron") %>%
+    addPolygons(popup = ~ str_extract(NAME, "^([^,]*)"),
+                stroke = FALSE,
+                smoothFactor = 0,
+                fillOpacity = 0.5,
+                color = ~without_computer_pal(proportion)) %>%
+    addLegend("bottomright", 
+              pal = without_computer_pal, 
+              values = ~proportion,
+              title = "Unemployed Workers Without a Computer",
+              opacity = 1)
+
+```
+
+
+```{r}
+working_but_no_computer <- get_acs(geography = "county", variables = c(total_pop_employed_no_computer = "B28007_008"),
+                              summary_var = c(employed_population = "B28007_001"), 
+                              year = 2021, geometry = TRUE) %>% mutate(proportion = (estimate/summary_est) * 100) 
+
+
+working_but_no_computer
+```
+
+
+```{r}
+
+
+
+working_but_no_computer_pal <- colorNumeric(palette = "inferno", domain = working_but_no_computer$proportion) 
+
+
+leaflet(data = working_but_no_computer) %>%
+  addProviderTiles(provider = "CartoDB.Positron") %>%
+  addPolygons(popup = ~ str_extract(NAME, "^([^,]*)"),
+              stroke = FALSE,
+              smoothFactor = 0,
+              fillOpacity = 0.5,
+              color = ~working_but_no_computer_pal(proportion)) %>%
+  addLegend("bottomright", 
+            pal = working_but_no_computer_pal, 
+            values = ~proportion,
+            title = "Employed Workers Without a Computer",
+            opacity = 1)
+
+```
+
+
+```{r}
+library(plotly)
+
+scatter_graph <- plot_ly(data = broadband_data_clean, x = ~total_pop_unemployed_no_computer, y =~total_pop_unemployed,
+                         text = ~NAME, size = ~total_pop_employed) %>% 
+                layout(title = 'Unemployment and Computer Ownership by County', 
+                       xaxis = list(title = 'Number of Unemployed Individuals without a Computer'), 
+                       yaxis = list(title = 'Total Unemployed Individuals')) 
+
+scatter_graph
+```
+
+
+```{r}
+
+scatter_graph <- plot_ly(data = broadband_data_clean, x = ~total_pop_unemployed_no_computer, y =~total_pop_unemployed,
+                         text = ~NAME, size = ~total_pop_employed) %>% 
+                layout(title = 'Unemployment and Computer Ownership by County', 
+                       xaxis = list(title = 'Number of Unemployed Individuals without a Computer'), 
+                       yaxis = list(title = 'Total Unemployed Individuals')) 
+
+scatter_graph
+
+```
+
+```{r}
+
+worst_internet <- broadband_data_clean[order(broadband_data_clean$total_pop_employed_has_cpu_and_dailup, decreasing = TRUE), ] %>% top_n(20, total_pop_employed_has_cpu_and_dailup)
+
+bar_graph <- plot_ly(data = worst_internet, x = ~NAME, y = ~total_pop_employed_has_cpu_and_dailup, type = "bar") %>% 
+                layout(title = 'Workers in the Labor Force with Dial-up Connectivity', 
+                       xaxis = list(title = '', visible = FALSE), 
+                       yaxis = list(title = 'Total Workers with Dial-up'))  %>% 
+                add_annotations(
+                        text = "Counties with the Most Dial-up Connections",
+                        x = "Clark County, Nevada",
+                        y = 3500,
+                        showarrow = FALSE,
+                        font = list(size = 10)) 
+
+bar_graph
+
+```
+
+
+```{r}
+library(DT)
+
+datatable(data = broadband_data_clean, class = 'cell-border stripe') 
+
+
+```
+
+
+```{r}
+```
+
